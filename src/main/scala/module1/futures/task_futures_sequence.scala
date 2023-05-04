@@ -2,7 +2,10 @@ package module1.futures
 
 import HomeworksUtils.TaskSyntax
 
-import scala.concurrent.{ExecutionContext, Future}
+import scala.::
+import scala.concurrent.Future.successful
+import scala.concurrent.{ExecutionContext, Future, Promise}
+import scala.util.{Failure, Success, Try}
 
 object task_futures_sequence {
 
@@ -19,10 +22,41 @@ object task_futures_sequence {
    * @param futures список асинхронных задач
    * @return асинхронную задачу с кортежом из двух списков
    */
-  def fullSequence[A](futures: List[Future[A]])
-                     (implicit ex: ExecutionContext): Future[(List[A], List[Throwable])] = {
+  def flatMmap[T, B](future: Future[T])(f: T => Future[B])(implicit ec: ExecutionContext): Future[B] = {
+    val p = Promise[B] // Promise от возвращаемого типа
+    future.onComplete { // ожидаем тип Т
+      case Failure(exception) => p.failure(exception)
+      case Success(value) => f(value).onComplete { // ожидаем тип В
+        case Failure(exception) => p.failure(exception)
+        case Success(value) => p.complete(Try(value))
+      }
+    }
+    p.future
+  }
+
+  def make[T](v: => T)(implicit ec: ExecutionContext): Future[T] = {
+    val p = Promise[T]
+    val rr = new Runnable {
+      override def run(): Unit = p.complete(Try(v))
+    }
+    ec.execute(rr) // запускаем новый поток
+    p.future
+  }
+  def fullSequence[A](futures: List[Future[A]])(implicit ex: ExecutionContext): Future[(List[A], List[Throwable])] = {
+    val p = Promise[Future[(List[A], List[Throwable])]]
+    futures
+      .foldLeft((List.empty[A], List.empty[Throwable])) { (acc, fut) =>
+        fut.onComplete {
+          case Failure(exception) => p.failure(exception) :: acc._2
+          case Success(value) => p.complete(Try(value :: acc._1, acc._2))
+        }
+        acc
+      }
+    p.future
+    }
+
     task"Реализуйте метод `fullSequence`"()
-    /*
+
     /** Simple version of `Future.traverse`. Asynchronously and non-blockingly transforms, in essence, a `IterableOnce[Future[A]]`
      *  into a `Future[IterableOnce[A]]`. Useful for reducing many `Future`s into a single `Future`.
      *
@@ -36,7 +70,7 @@ object task_futures_sequence {
       in.iterator.foldLeft(successful(bf.newBuilder(in))) {
         (fr, fa) => fr.zipWith(fa)(Future.addToBuilderFun)
       }.map(_.result())(if (executor.isInstanceOf[BatchingExecutor]) executor else parasitic)
-     */
+
 
   }
 }
